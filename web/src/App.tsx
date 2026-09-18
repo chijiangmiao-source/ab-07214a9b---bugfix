@@ -30,12 +30,22 @@ export default function App() {
 
   // 轮询请求序号：较早发出的响应（网络抖动下可能晚到）绝不能覆盖更新的数据。
   const pollSeq = useRef(0);
+  // 看板当前归属的场次。PATCH 保存响应可能在场次切换后才晚到，
+  // 据此刻画“这条行还属不属于当前看板”。
+  const sceneRef = useRef(sceneId);
+  useEffect(() => {
+    sceneRef.current = sceneId;
+  }, [sceneId]);
 
-  const applyBoardSnapshot = useCallback((fetched: IssuedOperation[]) => {
-    // 按操作标识合并，修订号只升不降：即便旧响应晚到，也不会用旧修订覆盖
-    // 新修订（包括本终端刚保存、或较新一次轮询已取回的内容）。
-    setSceneOps((previous) => mergeBoardSnapshot(previous, fetched));
-  }, []);
+  const applyBoardSnapshot = useCallback(
+    (fetched: IssuedOperation[], scene: string) => {
+      // 按“场次 + 操作标识”合并：不同场次的行互不并入（场次直接 A→B 切换时，
+      // 旧场次 A 的行不会与 B 的快照做并集）；同场次内修订号只升不降，即便旧
+      // 响应晚到也不会用旧修订覆盖新修订（较新轮询或本终端刚保存的内容）。
+      setSceneOps((previous) => mergeBoardSnapshot(previous, fetched, scene));
+    },
+    [],
+  );
 
   const refreshBoard = useCallback(
     async (scene: string) => {
@@ -45,11 +55,18 @@ export default function App() {
         setSceneOps([]);
         return;
       }
+      // 场次切换（含不经过空值的 A→B 直接切换）后立即清掉旧场次行，
+      // 避免旧行在新场次标题下被渲染、甚至被行内修订。
+      setSceneOps((previous) =>
+        previous.some((op) => op.scene_id !== trimmed)
+          ? previous.filter((op) => op.scene_id === trimmed)
+          : previous,
+      );
       try {
         const ops = await api.listSceneOperations(trimmed);
         // 过期响应：期间又发起了更新的轮询（或场次已切换），直接丢弃。
         if (seq !== pollSeq.current) return;
-        applyBoardSnapshot(ops);
+        applyBoardSnapshot(ops, trimmed);
         setBoardError(null);
       } catch {
         if (seq !== pollSeq.current) return;
@@ -59,11 +76,17 @@ export default function App() {
     [applyBoardSnapshot],
   );
 
-  const handleNotesSaved = useCallback((updated: IssuedOperation, merged: boolean) => {
-    // 行内保存成功：立即用服务端返回的最新行更新看板，不等下一次轮询。
-    applyBoardSnapshot([updated]);
-    if (merged) setBoardError(null);
-  }, [applyBoardSnapshot]);
+  const handleNotesSaved = useCallback(
+    (updated: IssuedOperation, merged: boolean) => {
+      // 行内保存成功：立即用服务端返回的最新行更新看板，不等下一次轮询。
+      // 但若保存响应在场次切换后才晚到（在旧看板行上点的保存），该行已不
+      // 属于当前看板，绝不能把旧场次的行并进来。
+      if (updated.scene_id !== sceneRef.current.trim()) return;
+      applyBoardSnapshot([updated], updated.scene_id);
+      if (merged) setBoardError(null);
+    },
+    [applyBoardSnapshot],
+  );
 
   const issuedCount = snapshot.issued.length;
   useEffect(() => {

@@ -54,7 +54,7 @@ docker compose --profile acceptance up --build --exit-code-from verify verify
 2. **pytest**：20 并发无重号无缺号、重复提交幂等、409 冲突、**进程重启后映射与计数恢复**、故障注入后重试取回原号码、**旧库迁移与幂等重放、备注修订三方合并/冲突**（其中 `test_live_service.py` 直接打向 compose 中运行的 `api` 服务）；
 3. **Vitest**：前端待重试保留、本地持久化、重试幂等键不变、409 反馈，以及备注草稿状态机与看板修订号归并等逻辑。
 
-浏览器端到端（Playwright，本地 `cd web && npm run e2e`）额外覆盖：行内修订、两终端不相交自动合并、重叠冲突解决、断网重试。
+浏览器端到端（Playwright，本地 `cd web && npm run e2e`）额外覆盖：行内修订、两终端不相交自动合并、重叠冲突解决、断网重试，以及场次直接 A→B 切换时旧场次记录不并入新看板。
 
 ## 幂等协议与事务边界
 

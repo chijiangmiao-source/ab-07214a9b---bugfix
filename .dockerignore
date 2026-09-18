@@ -10,5 +10,7 @@
 **/*.db-wal
 **/*.db-shm
 .venv
+.npm-cache
+.syslibs
 data
 *.log

@@ -25,3 +25,7 @@ playwright-report/
 *.log
 .idea/
 .vscode/
+
+# 本地验收环境自举产物（无 root 下为浏览器/测试临时安装的依赖与缓存）
+.npm-cache/
+.syslibs/
