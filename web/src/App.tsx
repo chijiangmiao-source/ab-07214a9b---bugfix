@@ -30,12 +30,22 @@ export default function App() {
 
   // 轮询请求序号：较早发出的响应（网络抖动下可能晚到）绝不能覆盖更新的数据。
   const pollSeq = useRef(0);
+  // 当前看板行所属场次。切换场次时立即清空看板并在此记账，保证：
+  // - 新场次的首个快照是“替换”而不是与旧场次行做并集；
+  // - 切换后晚到的旧场次轮询/PATCH 响应不会再把旧行写回看板。
+  const boardScene = useRef('');
 
-  const applyBoardSnapshot = useCallback((fetched: IssuedOperation[]) => {
-    // 按操作标识合并，修订号只升不降：即便旧响应晚到，也不会用旧修订覆盖
-    // 新修订（包括本终端刚保存、或较新一次轮询已取回的内容）。
-    setSceneOps((previous) => mergeBoardSnapshot(previous, fetched));
-  }, []);
+  const applyBoardSnapshot = useCallback(
+    (scene: string, fetched: IssuedOperation[]) => {
+      // 场次切换后到达的过期响应（旧场次的轮询或行内保存回调）一律丢弃。
+      if (scene !== boardScene.current) return;
+      // 按操作标识合并，修订号只升不降：即便旧响应晚到，也不会用旧修订覆盖
+      // 新修订（包括本终端刚保存、或较新一次轮询已取回的内容）；
+      // 同时按场次隔离，旧场次的行不会被并入新场次看板。
+      setSceneOps((previous) => mergeBoardSnapshot(previous, fetched, scene));
+    },
+    [],
+  );
 
   const refreshBoard = useCallback(
     async (scene: string) => {
@@ -49,7 +59,7 @@ export default function App() {
         const ops = await api.listSceneOperations(trimmed);
         // 过期响应：期间又发起了更新的轮询（或场次已切换），直接丢弃。
         if (seq !== pollSeq.current) return;
-        applyBoardSnapshot(ops);
+        applyBoardSnapshot(trimmed, ops);
         setBoardError(null);
       } catch {
         if (seq !== pollSeq.current) return;
@@ -59,14 +69,26 @@ export default function App() {
     [applyBoardSnapshot],
   );
 
-  const handleNotesSaved = useCallback((updated: IssuedOperation, merged: boolean) => {
-    // 行内保存成功：立即用服务端返回的最新行更新看板，不等下一次轮询。
-    applyBoardSnapshot([updated]);
-    if (merged) setBoardError(null);
-  }, [applyBoardSnapshot]);
+  const handleNotesSaved = useCallback(
+    (updated: IssuedOperation, merged: boolean) => {
+      // 行内保存成功：立即用服务端返回的最新行更新看板，不等下一次轮询。
+      // 若保存期间场次已切换，这行属于旧场次，不得写回当前看板。
+      applyBoardSnapshot(updated.scene_id, [updated]);
+      if (merged && updated.scene_id === boardScene.current) setBoardError(null);
+    },
+    [applyBoardSnapshot],
+  );
 
   const issuedCount = snapshot.issued.length;
   useEffect(() => {
+    const scene = sceneId.trim();
+    // 场次真正变化时立即清空旧场次行并记账：不等首个响应回来，避免旧场次行
+    // （连同行内编辑器）继续挂在新场次标题下。同一场次内新领镜号只触发轮询，
+    // 不清空（避免看板闪烁）。
+    if (boardScene.current !== scene) {
+      boardScene.current = scene;
+      setSceneOps([]);
+    }
     void refreshBoard(sceneId);
     const timer = window.setInterval(() => void refreshBoard(sceneId), 3000);
     return () => window.clearInterval(timer);

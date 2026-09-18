@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { mergeBoardSnapshot } from './board';
 import type { IssuedOperation } from './types';
 
-function op(revision: number, overrides: Partial<IssuedOperation> = {}): IssuedOperation {
+function op(
+  revision: number,
+  overrides: Partial<IssuedOperation> = {},
+): IssuedOperation {
   return {
     scene_id: 'S1',
     client_op_id: 'op-1',
@@ -17,13 +20,14 @@ function op(revision: number, overrides: Partial<IssuedOperation> = {}): IssuedO
 describe('mergeBoardSnapshot', () => {
   it('本地为空时采用新快照', () => {
     const fetched = [op(0)];
-    expect(mergeBoardSnapshot([], fetched)).toEqual(fetched);
+    expect(mergeBoardSnapshot([], fetched, 'S1')).toEqual(fetched);
   });
 
   it('相同修订号的轮询快照采用服务端行', () => {
     const result = mergeBoardSnapshot(
       [op(2, { notes: '本终端保存响应写入的 r2 文本' })],
       [op(2, { notes: '服务端轮询回来的 r2 文本' })],
+      'S1',
     );
     expect(result[0].notes_revision).toBe(2);
     expect(result[0].notes).toBe('服务端轮询回来的 r2 文本');
@@ -33,6 +37,7 @@ describe('mergeBoardSnapshot', () => {
     const result = mergeBoardSnapshot(
       [op(3, { notes: '最新 r3 文本（更新的轮询或本终端保存响应）' })],
       [op(1, { notes: '旧 r1 文本（迟到的响应）' })],
+      'S1',
     );
     expect(result[0].notes_revision).toBe(3);
     expect(result[0].notes).toBe('最新 r3 文本（更新的轮询或本终端保存响应）');
@@ -42,6 +47,7 @@ describe('mergeBoardSnapshot', () => {
     const result = mergeBoardSnapshot(
       [op(1, { notes: 'r1 文本' })],
       [op(2, { notes: 'r2 文本' })],
+      'S1',
     );
     expect(result[0].notes_revision).toBe(2);
     expect(result[0].notes).toBe('r2 文本');
@@ -56,8 +62,49 @@ describe('mergeBoardSnapshot', () => {
       op(2, { client_op_id: 'b', shot_number: 2, notes: 'b 的 r2' }),
       op(1, { client_op_id: 'c', shot_number: 3 }),
     ];
-    const result = mergeBoardSnapshot(previous, fetched);
+    const result = mergeBoardSnapshot(previous, fetched, 'S1');
     expect(result.map((row) => row.client_op_id)).toEqual(['a', 'b', 'c']);
     expect(result[1].notes_revision).toBe(2);
+  });
+
+  it('切换场次后旧场次行不与新场次快照做并集，看板只留新场次完整快照', () => {
+    // 浏览器先加载场次 A（看板上已有 A 的行），随后不经过空值直接切到 B。
+    const sceneA = [
+      op(0, { scene_id: 'A', client_op_id: 'a-1', shot_number: 1, notes: 'A 的记录' }),
+    ];
+    const sceneB = [
+      op(0, { scene_id: 'B', client_op_id: 'b-1', shot_number: 1, notes: 'B 的记录' }),
+    ];
+    const result = mergeBoardSnapshot(sceneA, sceneB, 'B');
+    expect(result.map((row) => row.client_op_id)).toEqual(['b-1']);
+    expect(result.every((row) => row.scene_id === 'B')).toBe(true);
+  });
+
+  it('切换场次后即便旧场次的迟到响应带有更高修订号，也不能把旧行写回新看板', () => {
+    // 极端乱序：切到 B 后，A 的迟到轮询里带着被其他终端推进到 r5 的 A 行；
+    // 场次隔离优先于修订号比较，A 行仍必须被丢弃。
+    const previous = [
+      op(0, { scene_id: 'B', client_op_id: 'b-1', shot_number: 1 }),
+    ];
+    const staleFromA = [
+      op(5, { scene_id: 'A', client_op_id: 'a-1', shot_number: 1 }),
+    ];
+    const result = mergeBoardSnapshot(previous, staleFromA, 'B');
+    expect(result.map((row) => row.client_op_id)).toEqual(['b-1']);
+    expect(result[0].scene_id).toBe('B');
+  });
+
+  it('同一场次内的迟到响应保护不受场次隔离影响', () => {
+    // 切到 B 并已拿到 B 的 r2 后，B 自身一个迟到的 r1 响应不得回退修订。
+    const previous = [
+      op(2, { scene_id: 'B', client_op_id: 'b-1', shot_number: 1, notes: 'B r2' }),
+    ];
+    const staleSameScene = [
+      op(1, { scene_id: 'B', client_op_id: 'b-1', shot_number: 1, notes: 'B r1' }),
+    ];
+    const result = mergeBoardSnapshot(previous, staleSameScene, 'B');
+    expect(result).toHaveLength(1);
+    expect(result[0].notes_revision).toBe(2);
+    expect(result[0].notes).toBe('B r2');
   });
 });
